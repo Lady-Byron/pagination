@@ -10,23 +10,54 @@ function getPageFromURL() {
     const p = new URL(window.location.href).searchParams.get('page');
     const n = parseInt(p, 10);
     return Number.isFinite(n) && n > 0 ? n : null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
+
+// 只改 page 参数，不重序列化整个 query，避免把 q 里的空格改成 +
 function setPageToURL(n, replace = true) {
   try {
-    const u = new URL(window.location.href);
-    if (n <= 1) u.searchParams.delete('page');
-    else u.searchParams.set('page', String(n));
-    const newUrl = u.pathname + u.search + u.hash;
+    const { pathname, search, hash } = window.location;
+    let query = search || ''; // 原始 "?q=...&page=..."，保持原样（包括 %20 / + 等编码）
+
+    const re = /([?&])page=\d+(&?)/;
+
+    if (re.test(query)) {
+      // 已存在 page=
+      if (n <= 1) {
+        // 删除 page 参数
+        query = query.replace(re, (match, sep, tail) => {
+          // 如果后面还有参数（tail 为 "&"），保留分隔符；否则干掉整个片段
+          return tail ? sep : '';
+        });
+        // 收尾清理
+        if (query === '?') query = '';
+        else if (query.endsWith('&')) query = query.slice(0, -1);
+      } else {
+        // 修改 page 数字
+        query = query.replace(re, (match, sep, tail) => {
+          return `${sep}page=${encodeURIComponent(String(n))}${tail ? '&' : ''}`;
+        });
+      }
+    } else if (n > 1) {
+      // 原来没有 page=，追加一个
+      query += (query ? '&' : '?') + 'page=' + encodeURIComponent(String(n));
+    }
+
+    const newUrl = pathname + query + (hash || '');
 
     const mAny = (window && window.m) || null;
     if (mAny && mAny.route && typeof mAny.route.set === 'function') {
-      mAny.route.set(newUrl, undefined, { replace: true });
+      // 使用 mithril 路由更新地址栏
+      mAny.route.set(newUrl, undefined, { replace });
     } else {
+      // 退回原生 history
       (replace ? history.replaceState : history.pushState).call(history, null, '', newUrl);
     }
   } catch {}
 }
+
 function routeKey() {
   try {
     const mAny = (window && window.m) || null;
@@ -39,25 +70,35 @@ function routeKey() {
 const PENDING_BACK_KEY = 'lbtc:dl:pendingBack';
 if (!(window).__dlBackMarkerInstalled) {
   (window).__dlBackMarkerInstalled = true;
-  document.addEventListener('click', (ev) => {
-    const target = ev.target;
-    const a = target && (target.closest?.('a[href*="/d/"]'));
-    if (a) {
-      try {
-        sessionStorage.setItem(PENDING_BACK_KEY, JSON.stringify({ t: Date.now(), base: routeKey() }));
-      } catch {}
-    }
-  }, { capture: true, passive: true });
+  document.addEventListener(
+    'click',
+    (ev) => {
+      const target = ev.target;
+      const a = target && target.closest?.('a[href*="/d/"]');
+      if (a) {
+        try {
+          sessionStorage.setItem(
+            PENDING_BACK_KEY,
+            JSON.stringify({ t: Date.now(), base: routeKey() })
+          );
+        } catch {}
+      }
+    },
+    { capture: true, passive: true }
+  );
 }
 function consumePendingBackForCurrentRoute() {
   try {
     const raw = sessionStorage.getItem(PENDING_BACK_KEY);
     if (!raw) return false;
     const obj = JSON.parse(raw);
-    const ok = obj && obj.base === routeKey() && Date.now() - (obj.t || 0) < 10 * 60 * 1000;
+    const ok =
+      obj && obj.base === routeKey() && Date.now() - (obj.t || 0) < 10 * 60 * 1000;
     if (ok) sessionStorage.removeItem(PENDING_BACK_KEY);
     return !!ok;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
 
 // ---------- 会话级页面缓存 ----------
@@ -74,7 +115,9 @@ function buildSessionKey(state, page) {
       page: Number(page) || 1,
     };
     return 'lbtc:dl:pagecache:' + JSON.stringify(keyObj);
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 function savePageCache(state, page, results) {
   try {
@@ -83,7 +126,10 @@ function savePageCache(state, page, results) {
     const ids = Array.isArray(results) ? results.map((d) => d && d.id && d.id()) : [];
     const total =
       (state.totalDiscussionCount && state.totalDiscussionCount()) ||
-      (results && results.payload && results.payload.jsonapi && results.payload.jsonapi.totalResultsCount) ||
+      (results &&
+        results.payload &&
+        results.payload.jsonapi &&
+        results.payload.jsonapi.totalResultsCount) ||
       0;
     const record = { ids, total, ts: Date.now(), perPage: state.options?.perPage || 20 };
     sessionStorage.setItem(key, JSON.stringify(record));
@@ -110,7 +156,9 @@ function tryRestoreFromSession(state, page) {
       models.push(model);
     }
 
-    const totalPages = Math.ceil((rec.total || 0) / (rec.perPage || state.options?.perPage || 20));
+    const totalPages = Math.ceil(
+      (rec.total || 0) / (rec.perPage || state.options?.perPage || 20)
+    );
     const links = {};
     if (page > 1) links.prev = true;
     if (page < totalPages) links.next = true;
@@ -118,7 +166,9 @@ function tryRestoreFromSession(state, page) {
     const results = models;
     results.payload = { jsonapi: { totalResultsCount: rec.total || 0 }, links };
     return results;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 function invalidateSessionPage(state, page) {
   try {
@@ -249,23 +299,31 @@ export default function () {
     if (preloadedDiscussions) {
       this.initialLoading = false;
       this.isRefreshing = false;
-      this.totalDiscussionCount = Stream(preloadedDiscussions.payload.jsonapi.totalResultsCount);
+      this.totalDiscussionCount = Stream(
+        preloadedDiscussions.payload.jsonapi.totalResultsCount
+      );
       this.lastTotalDiscussionCount = this.totalDiscussionCount();
       return Promise.resolve(preloadedDiscussions);
     }
 
     // 本地缓存复用（参数未变）
     if (!this.isRefreshing && this.options.cacheDiscussions) {
-      const includeChanged = JSON.stringify(reqParams['include']) !== JSON.stringify(this.lastRequestParams['include']);
-      const filterChanged  = JSON.stringify(reqParams['filter'])  !== JSON.stringify(this.lastRequestParams['filter']);
-      const sortChanged    = reqParams['sort'] !== this.lastRequestParams['sort'];
+      const includeChanged =
+        JSON.stringify(reqParams['include']) !==
+        JSON.stringify(this.lastRequestParams['include']);
+      const filterChanged =
+        JSON.stringify(reqParams['filter']) !==
+        JSON.stringify(this.lastRequestParams['filter']);
+      const sortChanged = reqParams['sort'] !== this.lastRequestParams['sort'];
 
       if (!(includeChanged || filterChanged || sortChanged)) {
         if (this.lastLoadedPage[page]) {
           const start = this.options.perPage * (page - 1);
           const end = this.options.perPage * page;
           const results = this.lastDiscussions.slice(start, end);
-          results.payload = { jsonapi: { totalResultsCount: this.totalDiscussionCount() } };
+          results.payload = {
+            jsonapi: { totalResultsCount: this.totalDiscussionCount() },
+          };
 
           this.initialLoading = true;
           m.redraw();
@@ -274,15 +332,20 @@ export default function () {
       }
     }
 
-    const include = Array.isArray(reqParams.include) ? reqParams.include.join(',') : reqParams.include;
+    const include = Array.isArray(reqParams.include)
+      ? reqParams.include.join(',')
+      : reqParams.include;
 
     let newOffset, newLimit;
     if (this.usePaginationMode) {
       newOffset = this.options.perPage * (page - 1);
       newLimit = this.options.perPage;
     } else {
-      newOffset = this.options.perIndexInit * Math.min(page - 1, 1) + this.options.perLoadMore * Math.max(page - 2, 0);
-      newLimit = newOffset === 0 ? this.options.perIndexInit : this.options.perLoadMore;
+      newOffset =
+        this.options.perIndexInit * Math.min(page - 1, 1) +
+        this.options.perLoadMore * Math.max(page - 2, 0);
+      newLimit =
+        newOffset === 0 ? this.options.perIndexInit : this.options.perLoadMore;
     }
 
     const params = {
@@ -297,166 +360,204 @@ export default function () {
   // cards 兼容：拿所有 items
   override(DiscussionListState.prototype, 'getAllItems', function (original) {
     if (!('walsgit-discussion-cards' in flarum.extensions)) return original();
-    return this.extraDiscussions.concat(this.getPages(true).map((pg) => pg.items).flat());
+    return this.extraDiscussions.concat(
+      this.getPages(true)
+        .map((pg) => pg.items)
+        .flat()
+    );
   });
 
   // cards 兼容：仅返回当前页（或所有页）
-  override(DiscussionListState.prototype, 'getPages', function (original, getAllPages = false) {
-    const allPages = original();
-    if (!('walsgit-discussion-cards' in flarum.extensions)) return allPages;
-    if (getAllPages) return allPages;
-    return [allPages.find((page) => page.number === this.location.page)];
-  });
+  override(
+    DiscussionListState.prototype,
+    'getPages',
+    function (original, getAllPages = false) {
+      const allPages = original();
+      if (!('walsgit-discussion-cards' in flarum.extensions)) return allPages;
+      if (getAllPages) return allPages;
+      return [allPages.find((page) => page.number === this.location.page)];
+    }
+  );
 
   // 解析结果并更新分页状态（保存会话缓存）
-  override(DiscussionListState.prototype, 'parseResults', function (original, pg, results) {
-    if (!this.usePaginationMode) return original(pg, results);
+  override(
+    DiscussionListState.prototype,
+    'parseResults',
+    function (original, pg, results) {
+      if (!this.usePaginationMode) return original(pg, results);
 
-    const pageNum = Number(pg);
-    const links = results.payload?.links || {};
-    const page = { number: pageNum, items: results, hasNext: !!links?.next, hasPrev: !!links?.prev };
+      const pageNum = Number(pg);
+      const links = results.payload?.links || {};
+      const page = {
+        number: pageNum,
+        items: results,
+        hasNext: !!links?.next,
+        hasPrev: !!links?.prev,
+      };
 
-    this.hasPage = function (num) {
-      const all = this.getPages(true);
-      if (all.length === 0) return false;
-      return all.some((p) => p.number === num);
-    };
+      this.hasPage = function (num) {
+        const all = this.getPages(true);
+        if (all.length === 0) return false;
+        return all.some((p) => p.number === num);
+      };
 
-    if (!this.hasPage(pageNum)) this.pages.push(page);
-    this.pages = this.pages.sort((a, b) => a.number - b.number);
-    this.location = { page: pageNum };
+      if (!this.hasPage(pageNum)) this.pages.push(page);
+      this.pages = this.pages.sort((a, b) => a.number - b.number);
+      this.location = { page: pageNum };
 
-    this.totalDiscussionCount = Stream(results.payload.jsonapi.totalResultsCount);
+      this.totalDiscussionCount = Stream(results.payload.jsonapi.totalResultsCount);
 
-    if (this.options.cacheDiscussions) {
-      if (
-        (this.lastTotalDiscussionCount !== this.totalDiscussionCount() && this.lastTotalDiscussionCount !== 0) ||
-        this.lastTotalDiscussionCount === 0 ||
-        this.isRefreshing
-      ) {
-        this.lastTotalDiscussionCount = this.totalDiscussionCount();
-        this.lastDiscussions = new Array(this.lastTotalDiscussionCount);
-        this.lastLoadedPage = {};
-      } else {
-        this.lastLoadedPage[pageNum] = page;
-        const start = this.options.perPage * (pageNum - 1);
-        const end = this.options.perPage * pageNum;
-        this.lastDiscussions.splice(start, end - start, ...results);
+      if (this.options.cacheDiscussions) {
+        if (
+          (this.lastTotalDiscussionCount !== this.totalDiscussionCount() &&
+            this.lastTotalDiscussionCount !== 0) ||
+          this.lastTotalDiscussionCount === 0 ||
+          this.isRefreshing
+        ) {
+          this.lastTotalDiscussionCount = this.totalDiscussionCount();
+          this.lastDiscussions = new Array(this.lastTotalDiscussionCount);
+          this.lastLoadedPage = {};
+        } else {
+          this.lastLoadedPage[pageNum] = page;
+          const start = this.options.perPage * (pageNum - 1);
+          const end = this.options.perPage * pageNum;
+          this.lastDiscussions.splice(start, end - start, ...results);
+        }
       }
+
+      this.getTotalPages = function () {
+        return Math.ceil(this.totalDiscussionCount() / this.options.perPage);
+      };
+
+      this.page = Stream(page);
+      this.perPage = Stream(this.options.perPage);
+      this.totalPages = Stream(this.getTotalPages());
+
+      // 保存本页到会话缓存（供回退直出）
+      savePageCache(this, pageNum, results);
+
+      this.ctrl = {
+        scrollToTop: function () {
+          const container = document.querySelector('#content > .IndexPage > .container');
+          const header = document.querySelector('#header');
+          let offsetY = 0;
+          if (header) offsetY = header.clientHeight;
+          if (container) {
+            const target =
+              container.getBoundingClientRect().top + window.scrollY - offsetY;
+            setTimeout(() => window.scrollTo({ top: target, behavior: 'smooth' }), 50);
+          }
+        }.bind(this),
+
+        prevPage: function () {
+          let current = this.page().number - 1;
+          if (current < 1) return;
+          this.page(current);
+          this.loadingPrev = true;
+          this.loadPage(current).then((r) => {
+            this.parseResults(current, r);
+            this.loadingPrev = false;
+            setPageToURL(current, true);
+            this.ctrl.scrollToTop();
+          });
+        }.bind(this),
+
+        nextPage: function () {
+          let current = this.page().number + 1;
+          if (current > this.totalPages()) {
+            current = this.totalPages();
+            return;
+          }
+          this.page(current);
+          this.loadingNext = true;
+          this.loadPage(current).then((r) => {
+            this.parseResults(current, r);
+            this.loadingNext = false;
+            setPageToURL(current, true);
+            this.ctrl.scrollToTop();
+          });
+        }.bind(this),
+
+        toPage: function (page) {
+          const target = Number(page);
+          if (
+            this.page().number === target ||
+            target < 1 ||
+            target > this.totalPages()
+          )
+            return;
+          this.page(target);
+          this.initialLoading = true;
+          this.loadPage(target).then((r) => {
+            this.parseResults(target, r);
+            this.initialLoading = false;
+            setPageToURL(target, true);
+            this.ctrl.scrollToTop();
+          });
+        }.bind(this),
+
+        pageList: function () {
+          const p = [];
+          const left = Math.max(
+            parseInt(this.page().number) - this.options.leftEdges,
+            1
+          );
+          const right = Math.min(
+            parseInt(this.page().number) + this.options.rightEdges,
+            this.totalPages()
+          );
+          for (let i = left; i <= right; i++) p.push(i);
+          return p;
+        }.bind(this),
+      };
+
+      m.redraw();
     }
-
-    this.getTotalPages = function () {
-      return Math.ceil(this.totalDiscussionCount() / this.options.perPage);
-    };
-
-    this.page = Stream(page);
-    this.perPage = Stream(this.options.perPage);
-    this.totalPages = Stream(this.getTotalPages());
-
-    // 保存本页到会话缓存（供回退直出）
-    savePageCache(this, pageNum, results);
-
-    this.ctrl = {
-      scrollToTop: function () {
-        const container = document.querySelector('#content > .IndexPage > .container');
-        const header = document.querySelector('#header');
-        let offsetY = 0;
-        if (header) offsetY = header.clientHeight;
-        if (container) {
-          const target = container.getBoundingClientRect().top + window.scrollY - offsetY;
-          setTimeout(() => window.scrollTo({ top: target, behavior: 'smooth' }), 50);
-        }
-      }.bind(this),
-
-      prevPage: function () {
-        let current = this.page().number - 1;
-        if (current < 1) return;
-        this.page(current);
-        this.loadingPrev = true;
-        this.loadPage(current).then((r) => {
-          this.parseResults(current, r);
-          this.loadingPrev = false;
-          setPageToURL(current, true);
-          this.ctrl.scrollToTop();
-        });
-      }.bind(this),
-
-      nextPage: function () {
-        let current = this.page().number + 1;
-        if (current > this.totalPages()) {
-          current = this.totalPages();
-          return;
-        }
-        this.page(current);
-        this.loadingNext = true;
-        this.loadPage(current).then((r) => {
-          this.parseResults(current, r);
-          this.loadingNext = false;
-          setPageToURL(current, true);
-          this.ctrl.scrollToTop();
-        });
-      }.bind(this),
-
-      toPage: function (page) {
-        const target = Number(page);
-        if (this.page().number === target || target < 1 || target > this.totalPages()) return;
-        this.page(target);
-        this.initialLoading = true;
-        this.loadPage(target).then((r) => {
-          this.parseResults(target, r);
-          this.initialLoading = false;
-          setPageToURL(target, true);
-          this.ctrl.scrollToTop();
-        });
-      }.bind(this),
-
-      pageList: function () {
-        const p = [];
-        const left = Math.max(parseInt(this.page().number) - this.options.leftEdges, 1);
-        const right = Math.min(parseInt(this.page().number) + this.options.rightEdges, this.totalPages());
-        for (let i = left; i <= right; i++) p.push(i);
-        return p;
-      }.bind(this),
-    };
-
-    m.redraw();
-  });
+  );
 
   // Realtime：倒计时结束 → 刷新第 1 页，但绕过一次会话缓存，确保拉到最新数据
-  override(DiscussionListState.prototype, 'addDiscussion', function (original, discussion) {
-    if (!this.usePaginationMode) return original(discussion);
+  override(
+    DiscussionListState.prototype,
+    'addDiscussion',
+    function (original, discussion) {
+      if (!this.usePaginationMode) return original(discussion);
 
-    clearTimeout(this.__rtRefreshTimer);
-    this.__rtRefreshTimer = setTimeout(() => {
-      this.page = this.page || Stream({ number: 1, items: [] });
-      this.location = { page: 1 };
-      this.__bypassSessionOnce = true;
-      invalidateSessionPage(this, 1);
-      this.refresh(1);
-    }, 50);
+      clearTimeout(this.__rtRefreshTimer);
+      this.__rtRefreshTimer = setTimeout(() => {
+        this.page = this.page || Stream({ number: 1, items: [] });
+        this.location = { page: 1 };
+        this.__bypassSessionOnce = true;
+        invalidateSessionPage(this, 1);
+        this.refresh(1);
+      }, 50);
 
-    const index = this.lastDiscussions.indexOf(discussion);
-    if (index !== -1) {
-      this.lastDiscussions.splice(index);
-      this.lastDiscussions.unshift(discussion);
-    } else {
-      this.lastDiscussions.unshift(discussion);
-      this.lastTotalDiscussionCount++;
-      this.totalDiscussionCount(this.lastTotalDiscussionCount);
+      const index = this.lastDiscussions.indexOf(discussion);
+      if (index !== -1) {
+        this.lastDiscussions.splice(index);
+        this.lastDiscussions.unshift(discussion);
+      } else {
+        this.lastDiscussions.unshift(discussion);
+        this.lastTotalDiscussionCount++;
+        this.totalDiscussionCount(this.lastTotalDiscussionCount);
+      }
+      m.redraw();
     }
-    m.redraw();
-  });
+  );
 
-  override(DiscussionListState.prototype, 'deleteDiscussion', function (original, discussion) {
-    if (!this.usePaginationMode) return original(discussion);
-    const index = this.lastDiscussions.indexOf(discussion);
-    if (index !== -1) {
-      this.lastDiscussions.splice(index);
-      this.lastTotalDiscussionCount--;
-      this.totalDiscussionCount(this.lastTotalDiscussionCount);
+  override(
+    DiscussionListState.prototype,
+    'deleteDiscussion',
+    function (original, discussion) {
+      if (!this.usePaginationMode) return original(discussion);
+      const index = this.lastDiscussions.indexOf(discussion);
+      if (index !== -1) {
+        this.lastDiscussions.splice(index);
+        this.lastTotalDiscussionCount--;
+        this.totalDiscussionCount(this.lastTotalDiscussionCount);
+      }
+      m.redraw();
     }
-    m.redraw();
-  });
+  );
 
   // 清理状态
   override(DiscussionListState.prototype, 'clear', function (original) {
