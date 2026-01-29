@@ -4,13 +4,22 @@ import DiscussionListState from 'flarum/forum/states/DiscussionListState';
 import Stream from 'flarum/common/utils/Stream';
 import determineMode from './utils/determineMode';
 
+// ---------- 调试日志 ----------
+const DEBUG = false;
+function logWarn(context, error) {
+  if (DEBUG && console && console.warn) {
+    console.warn(`[foskym-pagination] ${context}:`, error);
+  }
+}
+
 // ---------- 路由/URL 工具 ----------
 function getPageFromURL() {
   try {
     const p = new URL(window.location.href).searchParams.get('page');
     const n = parseInt(p, 10);
     return Number.isFinite(n) && n > 0 ? n : null;
-  } catch {
+  } catch (e) {
+    logWarn('getPageFromURL', e);
     return null;
   }
 }
@@ -55,14 +64,18 @@ function setPageToURL(n, replace = true) {
       // 退回原生 history
       (replace ? history.replaceState : history.pushState).call(history, null, '', newUrl);
     }
-  } catch {}
+  } catch (e) {
+    logWarn('setPageToURL', e);
+  }
 }
 
 function routeKey() {
   try {
     const mAny = (window && window.m) || null;
     if (mAny?.route?.get) return String(mAny.route.get());
-  } catch {}
+  } catch (e) {
+    logWarn('routeKey', e);
+  }
   return location.pathname + location.search + (location.hash || '');
 }
 
@@ -81,7 +94,9 @@ if (!(window).__dlBackMarkerInstalled) {
             PENDING_BACK_KEY,
             JSON.stringify({ t: Date.now(), base: routeKey() })
           );
-        } catch {}
+        } catch (e) {
+          logWarn('setPendingBack', e);
+        }
       }
     },
     { capture: true, passive: true }
@@ -96,12 +111,17 @@ function consumePendingBackForCurrentRoute() {
       obj && obj.base === routeKey() && Date.now() - (obj.t || 0) < 10 * 60 * 1000;
     if (ok) sessionStorage.removeItem(PENDING_BACK_KEY);
     return !!ok;
-  } catch {
+  } catch (e) {
+    logWarn('consumePendingBack', e);
     return false;
   }
 }
 
 // ---------- 会话级页面缓存 ----------
+const CACHE_PREFIX = 'lbtc:dl:pagecache:';
+const CACHE_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+const CACHE_MAX_ENTRIES = 50;
+
 function buildSessionKey(state, page) {
   try {
     const req = state.requestParams ? state.requestParams() : {};
@@ -114,11 +134,50 @@ function buildSessionKey(state, page) {
       perPage: state.options?.perPage || 20,
       page: Number(page) || 1,
     };
-    return 'lbtc:dl:pagecache:' + JSON.stringify(keyObj);
-  } catch {
+    return CACHE_PREFIX + JSON.stringify(keyObj);
+  } catch (e) {
+    logWarn('buildSessionKey', e);
     return null;
   }
 }
+
+function cleanupOldCacheEntries() {
+  try {
+    const now = Date.now();
+    const entries = [];
+
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (key && key.startsWith(CACHE_PREFIX)) {
+        try {
+          const raw = sessionStorage.getItem(key);
+          const rec = raw ? JSON.parse(raw) : null;
+          if (rec && rec.ts) {
+            // Remove expired entries
+            if (now - rec.ts > CACHE_MAX_AGE_MS) {
+              sessionStorage.removeItem(key);
+            } else {
+              entries.push({ key, ts: rec.ts });
+            }
+          }
+        } catch {
+          // Invalid entry, remove it
+          sessionStorage.removeItem(key);
+        }
+      }
+    }
+
+    // If still too many entries, remove oldest ones
+    if (entries.length > CACHE_MAX_ENTRIES) {
+      entries.sort((a, b) => a.ts - b.ts);
+      const toRemove = entries.slice(0, entries.length - CACHE_MAX_ENTRIES);
+      toRemove.forEach((e) => sessionStorage.removeItem(e.key));
+    }
+  } catch (e) {
+    logWarn('cleanupOldCacheEntries', e);
+  }
+}
+
 function savePageCache(state, page, results) {
   try {
     const key = buildSessionKey(state, page);
@@ -133,8 +192,20 @@ function savePageCache(state, page, results) {
       0;
     const record = { ids, total, ts: Date.now(), perPage: state.options?.perPage || 20 };
     sessionStorage.setItem(key, JSON.stringify(record));
-  } catch {}
+
+    // Periodically cleanup old entries (1 in 10 chance)
+    if (Math.random() < 0.1) {
+      cleanupOldCacheEntries();
+    }
+  } catch (e) {
+    logWarn('savePageCache', e);
+    // If storage is full, try to clean up and retry once
+    if (e.name === 'QuotaExceededError') {
+      cleanupOldCacheEntries();
+    }
+  }
 }
+
 function tryRestoreFromSession(state, page) {
   try {
     const key = buildSessionKey(state, page);
@@ -144,6 +215,12 @@ function tryRestoreFromSession(state, page) {
 
     const rec = JSON.parse(raw);
     if (!rec || !Array.isArray(rec.ids) || !rec.ids.length) return null;
+
+    // Check if cache entry is expired
+    if (rec.ts && Date.now() - rec.ts > CACHE_MAX_AGE_MS) {
+      sessionStorage.removeItem(key);
+      return null;
+    }
 
     const type = state.type || 'discussions';
     const models = [];
@@ -166,15 +243,19 @@ function tryRestoreFromSession(state, page) {
     const results = models;
     results.payload = { jsonapi: { totalResultsCount: rec.total || 0 }, links };
     return results;
-  } catch {
+  } catch (e) {
+    logWarn('tryRestoreFromSession', e);
     return null;
   }
 }
+
 function invalidateSessionPage(state, page) {
   try {
     const key = buildSessionKey(state, page);
     if (key) sessionStorage.removeItem(key);
-  } catch {}
+  } catch (e) {
+    logWarn('invalidateSessionPage', e);
+  }
 }
 
 export default function () {
@@ -515,32 +596,80 @@ export default function () {
     }
   );
 
-  // Realtime：倒计时结束 → 刷新第 1 页，但绕过一次会话缓存，确保拉到最新数据
+  // Realtime 兼容：静默插入新帖子，不强制刷新/跳转
+  // 与 Flarum 原生黄条机制配合：倒计时结束后自动调用 addDiscussion
   override(
     DiscussionListState.prototype,
     'addDiscussion',
     function (original, discussion) {
       if (!this.usePaginationMode) return original(discussion);
 
-      clearTimeout(this.__rtRefreshTimer);
-      this.__rtRefreshTimer = setTimeout(() => {
-        this.page = this.page || Stream({ number: 1, items: [] });
-        this.location = { page: 1 };
-        this.__bypassSessionOnce = true;
-        invalidateSessionPage(this, 1);
-        this.refresh(1);
-      }, 50);
+      // 1. 更新内部计数和缓存
+      const existingIdx = this.lastDiscussions.findIndex(
+        (d) => d && d.id && d.id() === discussion.id()
+      );
 
-      const index = this.lastDiscussions.indexOf(discussion);
-      if (index !== -1) {
-        this.lastDiscussions.splice(index);
-        this.lastDiscussions.unshift(discussion);
+      if (existingIdx !== -1) {
+        // 已存在：移动到开头（可能是编辑触发的更新）
+        this.lastDiscussions.splice(existingIdx, 1);
       } else {
-        this.lastDiscussions.unshift(discussion);
+        // 新讨论：增加计数
         this.lastTotalDiscussionCount++;
-        this.totalDiscussionCount(this.lastTotalDiscussionCount);
+        if (this.totalDiscussionCount) {
+          this.totalDiscussionCount(this.lastTotalDiscussionCount);
+        }
+        if (this.totalPages) {
+          this.totalPages(Math.ceil(this.lastTotalDiscussionCount / (this.options?.perPage || 20)));
+        }
       }
-      m.redraw();
+
+      // 插入到缓存开头
+      this.lastDiscussions.unshift(discussion);
+
+      // 2. 使第 1 页的会话缓存失效（下次访问时重新获取）
+      invalidateSessionPage(this, 1);
+      if (this.lastLoadedPage) {
+        delete this.lastLoadedPage[1];
+      }
+
+      // 3. 如果用户当前在第 1 页且是默认排序（无筛选），静默插入到视图
+      const isOnFirstPage = this.location?.page === 1;
+      const params = this.getParams ? this.getParams() : {};
+      const hasSearchQuery = !!params.q;
+      const hasFilter = params.filter && Object.keys(params.filter).length > 0;
+      const sortParam = params.sort || '';
+      const isDefaultSort = !sortParam || sortParam === '-lastPostedAt' || sortParam === 'latest';
+
+      if (isOnFirstPage && !hasSearchQuery && !hasFilter && isDefaultSort) {
+        const page1 = this.pages?.find((p) => p.number === 1);
+        if (page1 && Array.isArray(page1.items)) {
+          // 检查是否已存在（避免重复）
+          const alreadyInView = page1.items.some(
+            (d) => d && d.id && d.id() === discussion.id()
+          );
+
+          if (!alreadyInView) {
+            // 插入到视图开头
+            page1.items.unshift(discussion);
+
+            // 保持每页数量不超限，移除末尾
+            const perPage = this.options?.perPage || 20;
+            if (page1.items.length > perPage) {
+              page1.items.pop();
+            }
+
+            // 更新 hasNext 状态（因为总数增加了）
+            if (this.lastTotalDiscussionCount > perPage) {
+              page1.hasNext = true;
+            }
+          }
+        }
+      }
+
+      // 4. 触发重绘
+      if (typeof m !== 'undefined' && m.redraw) {
+        m.redraw();
+      }
     }
   );
 

@@ -11,28 +11,23 @@
 
 namespace FoskyM\Pagination;
 
-use Flarum\Extend;
 use Flarum\Api\Controller\AbstractSerializeController;
-use Flarum\Api\JsonApiResponse;
-use Illuminate\Contracts\Container\Container;
-use Illuminate\Database\Eloquent\Collection;
-use Illuminate\Support\Arr;
-use Illuminate\Support\Str;
-use InvalidArgumentException;
-use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Tobscure\JsonApi\Document;
-use Tobscure\JsonApi\Parameters;
-use Tobscure\JsonApi\SerializerInterface;
-use Flarum\Discussion\Discussion;
 
 class LoadPagination
 {
     public function __invoke(AbstractSerializeController $controller, $data, Request $request, Document $document)
     {
-        if (isset($_REQUEST['totalResultsCount'])) {
-            $document->setJsonapi(['totalResultsCount' => $_REQUEST['totalResultsCount']]);
-        } else if (is_object($data) && property_exists($data, 'totalResultsCount')) {
+        // Try to get count from our container first
+        $count = TotalResultsCount::get();
+
+        if ($count !== null) {
+            $document->setJsonapi(['totalResultsCount' => $count]);
+            // Reset for next request
+            TotalResultsCount::reset();
+        } elseif (is_object($data) && property_exists($data, 'totalResultsCount')) {
+            // Fallback: check if data object has the count
             $document->setJsonapi(['totalResultsCount' => $data->totalResultsCount]);
         }
     }

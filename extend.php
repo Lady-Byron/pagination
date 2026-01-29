@@ -13,8 +13,6 @@ namespace FoskyM\Pagination;
 
 use Flarum\Extend;
 use Flarum\Api\Controller\AbstractSerializeController;
-use Flarum\Api\Controller\ListDiscussionsController;
-use Flarum\Filter\AbstractFilterer;
 use Flarum\Discussion\Filter\DiscussionFilterer;
 use Flarum\Discussion\Search\DiscussionSearcher;
 
