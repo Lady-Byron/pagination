@@ -15,8 +15,6 @@ use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 use Psr\Http\Server\MiddlewareInterface;
 use Psr\Http\Server\RequestHandlerInterface;
-use Flarum\Http\RequestUtil;
-use Laminas\Diactoros\Response\JsonResponse;
 
 class PaginationMiddleware implements MiddlewareInterface
 {
@@ -24,9 +22,7 @@ class PaginationMiddleware implements MiddlewareInterface
     {
         $settings = app('flarum.settings');
 
-        $actor = RequestUtil::getActor($request);
         $queryParams = $request->getQueryParams();
-        $offset = $queryParams['page']['offset'] ?? 0;
         $limit = $queryParams['page']['limit'] ?? 20;
 
         if ($settings->get('foskym-pagination.paginationOnLoading')) {

@@ -13,24 +13,23 @@ namespace FoskyM\Pagination\Filter;
 
 use Flarum\Filter\FilterState;
 use Flarum\Query\QueryCriteria;
-use Illuminate\Database\Capsule\Manager as DB;
+use FoskyM\Pagination\TotalResultsCount;
 
 class Filter
 {
     public function __invoke(FilterState $filter, QueryCriteria $queryCriteria)
     {
-        $query = $filter->getQuery();
-        $query = clone $query;
+        // Clone the query to avoid modifying the original
+        $query = clone $filter->getQuery();
 
-        $sql = $query->toSql();
-        $sql = preg_replace('/\s+limit\s+\d+/i', '', $sql);
-        $sql = preg_replace('/\s+offset\s+\d+/i', '', $sql);
-        $bindings = $query->getBindings();
-        $sql = str_replace('?', "'%s'", $sql);
-        $sql = vsprintf($sql, $bindings);
+        // Remove limit and offset to get total count
+        // Using Query Builder methods instead of raw SQL manipulation
+        $query->limit(null)->offset(null);
 
-        $query = DB::table(DB::raw("($sql) as t"));
+        // Get count using Query Builder's count method (safe, parameterized)
+        $count = $query->getCountForPagination();
 
-        $_REQUEST['totalResultsCount'] = $query->count();
+        // Store in our thread-safe container
+        TotalResultsCount::set($count);
     }
 }
